@@ -9,11 +9,19 @@ between those two points, and fails when:
 
 - a function/method exists only at head and its complexity is worse than
   grade B (complexity > 10), or
-- a function/method exists at both revisions and its complexity increased,
-  even if it's still an acceptable grade.
+- a function/method exists at both revisions, its complexity increased, and
+  the resulting (head) complexity leaves grade A (complexity > 5).
+
+A regression that lands the block anywhere within grade A — e.g. 1 → 2, or
+4 → 5 — is allowed: grade A is already the lowest, self-imposed complexity
+band, so a one-point wobble inside it (a single added guard clause, say)
+isn't the kind of creep this ratchet exists to catch. Once a block's head
+complexity leaves grade A, any increase is flagged, including further growth
+of an already-worse-than-A block.
 
 New code is held to a real bar; existing code you didn't touch is never
-penalized; and code you did touch can only get simpler or stay the same.
+penalized; and code you did touch can only get simpler, stay the same, or
+wobble within grade A.
 
 ## Why classes are excluded
 
