@@ -70,6 +70,31 @@ def test_increased_complexity_fails():
     assert violations[0].head_complexity == 15
 
 
+def test_increased_complexity_within_grade_a_passes():
+    base_blocks = {"pkg/mod.py::fn": _block("fn", 1, "A")}
+    head_blocks = {"pkg/mod.py::fn": _block("fn", 2, "A")}
+
+    assert ratchet.compare_blocks(base_blocks, head_blocks) == []
+
+
+def test_increased_complexity_still_within_grade_a_at_ceiling_passes():
+    base_blocks = {"pkg/mod.py::fn": _block("fn", 4, "A")}
+    head_blocks = {"pkg/mod.py::fn": _block("fn", 5, "A")}
+
+    assert ratchet.compare_blocks(base_blocks, head_blocks) == []
+
+
+def test_increased_complexity_leaving_grade_a_fails():
+    base_blocks = {"pkg/mod.py::fn": _block("fn", 5, "A")}
+    head_blocks = {"pkg/mod.py::fn": _block("fn", 6, "B")}
+
+    violations = ratchet.compare_blocks(base_blocks, head_blocks)
+
+    assert len(violations) == 1
+    assert violations[0].base_complexity == 5
+    assert violations[0].head_complexity == 6
+
+
 def test_improved_complexity_passes():
     base_blocks = {"pkg/mod.py::fn": _block("fn", 15, "C")}
     head_blocks = {"pkg/mod.py::fn": _block("fn", 11, "C")}

@@ -20,8 +20,14 @@ complexity is where a real regression would show up anyway.
 Fails when:
   - a function or method exists only at head and its complexity is worse
     than grade B (i.e. complexity > 10), or
-  - a function or method exists at both revisions and its complexity
-    increased.
+  - a function or method exists at both revisions, its complexity increased,
+    and the resulting (head) complexity leaves grade A (i.e. complexity > 5).
+    A regression that lands the block anywhere within grade A -- e.g. 1 -> 2,
+    or 4 -> 5 -- is allowed: grade A is already the lowest, self-imposed
+    complexity band, so a one-point wobble inside it (a single added guard
+    clause, say) isn't the kind of creep this ratchet exists to catch. Once a
+    block's head complexity leaves grade A, any increase is still flagged,
+    including further growth of an already-worse-than-A block (e.g. 11 -> 15).
 
 Run as a script (``uv run python .github/complexity_ratchet.py``) or import
 ``compare_blocks``/``run`` for testing.
@@ -37,6 +43,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+GRADE_A_MAX_COMPLEXITY = 5
 GRADE_B_MAX_COMPLEXITY = 10
 
 
@@ -172,7 +179,7 @@ def compare_blocks(base_blocks: dict[str, dict], head_blocks: dict[str, dict]) -
                 )
             continue
         base_complexity = base_entry["complexity"]
-        if head_complexity > base_complexity:
+        if head_complexity > base_complexity and head_complexity > GRADE_A_MAX_COMPLEXITY:
             violations.append(
                 Violation(
                     qualified_name=qualified_name,
