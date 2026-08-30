@@ -42,12 +42,17 @@ ratcheted.
 The comparison engine can check edits that have not been committed yet:
 
 ```bash
-uv run --with radon python complexity_ratchet.py --base origin/main --worktree
+uvx --from 'git+https://github.com/relomy/complexity-ratchet@v0.1.0' \
+  complexity-ratchet --base origin/main --worktree
 ```
 
 `--worktree` compares the base revision with the current working tree and
 includes staged, unstaged, and untracked Python files. `--head` remains the
 revision-based mode used by the GitHub Action.
+
+The CLI and GitHub Action are released together using semantic version tags.
+Release Please opens a release PR from Conventional Commit messages merged to
+`main`; merging that PR creates the corresponding GitHub release and tag.
 
 Your workflow needs to check out enough history to resolve a merge-base
 (`fetch-depth: 0`, or at least enough to reach the base branch), and needs
