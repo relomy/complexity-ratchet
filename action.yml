@@ -1,0 +1,43 @@
+name: "Complexity Ratchet"
+description: >-
+  Fail CI when Python code changed in this PR regresses in Radon cyclomatic
+  complexity, or introduces new code worse than grade B. Compares only
+  functions and methods (class-level "complexity" is a derived average
+  across a class's methods, not a fact about any code you changed, so it is
+  excluded to avoid false positives from normal class growth).
+author: relomy
+branding:
+  icon: "trending-down"
+  color: "purple"
+
+inputs:
+  base:
+    description: >-
+      Base revision to compare against. Defaults to the merge-base of
+      "origin/main" and `head`.
+    required: false
+    default: ""
+  head:
+    description: "Head revision to check."
+    required: false
+    default: "HEAD"
+  python-command:
+    description: >-
+      Command used to invoke Python (e.g. "python", "uv run python",
+      "poetry run python"). Python and `radon` must already be available
+      through this command — this action does not install either.
+    required: false
+    default: "python"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run complexity ratchet
+      shell: bash
+      run: |
+        set -euo pipefail
+        args=(--head "${{ inputs.head }}")
+        if [ -n "${{ inputs.base }}" ]; then
+          args+=(--base "${{ inputs.base }}")
+        fi
+        ${{ inputs.python-command }} "${{ github.action_path }}/complexity_ratchet.py" "${args[@]}"
