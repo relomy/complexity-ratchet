@@ -19,7 +19,12 @@ ratchet = _load_module()
 
 
 def _block(name, complexity, rank, classname=None):
-    return {"name": name, "complexity": complexity, "rank": rank, "classname": classname}
+    return {
+        "name": name,
+        "complexity": complexity,
+        "rank": rank,
+        "classname": classname,
+    }
 
 
 def test_flatten_blocks_skips_class_entries():
@@ -112,11 +117,15 @@ def test_unchanged_complexity_passes():
 def test_matches_methods_and_nested_blocks_by_qualified_name():
     base_blocks = {
         "pkg/mod.py::Widget.render": _block("render", 8, "B", classname="Widget"),
-        "pkg/mod.py::Widget.build_inner": _block("build_inner", 5, "A", classname="Widget"),
+        "pkg/mod.py::Widget.build_inner": _block(
+            "build_inner", 5, "A", classname="Widget"
+        ),
     }
     head_blocks = {
         "pkg/mod.py::Widget.render": _block("render", 8, "B", classname="Widget"),
-        "pkg/mod.py::Widget.build_inner": _block("build_inner", 12, "C", classname="Widget"),
+        "pkg/mod.py::Widget.build_inner": _block(
+            "build_inner", 12, "C", classname="Widget"
+        ),
     }
 
     violations = ratchet.compare_blocks(base_blocks, head_blocks)
@@ -144,7 +153,11 @@ def test_check_revisions_end_to_end(tmp_path):
     _git(repo, "add", "mod.py")
     _git(repo, "commit", "-q", "-m", "base")
     base_rev = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
     messy_body = "\n".join(f"    if x == {i}:\n        return {i}" for i in range(15))
@@ -152,7 +165,11 @@ def test_check_revisions_end_to_end(tmp_path):
     _git(repo, "add", "mod.py")
     _git(repo, "commit", "-q", "-m", "add messy function")
     head_rev = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
     violations = ratchet.check_revisions(base_rev, head_rev, repo_root=repo)
@@ -188,7 +205,11 @@ def test_check_revisions_ignores_class_average_regression(tmp_path):
     _git(repo, "add", "mod.py")
     _git(repo, "commit", "-q", "-m", "base")
     base_rev = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
     (repo / "mod.py").write_text(
@@ -223,7 +244,11 @@ def test_check_revisions_ignores_class_average_regression(tmp_path):
     _git(repo, "add", "mod.py")
     _git(repo, "commit", "-q", "-m", "add method f")
     head_rev = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
     assert ratchet.check_revisions(base_rev, head_rev, repo_root=repo) == []
@@ -238,14 +263,74 @@ def test_check_revisions_no_changed_python_files_passes(tmp_path):
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-q", "-m", "base")
     base_rev = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
     (repo / "README.md").write_text("hello again\n")
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-q", "-m", "docs")
     head_rev = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
     assert ratchet.check_revisions(base_rev, head_rev, repo_root=repo) == []
+
+
+def test_check_worktree_detects_uncommitted_regression(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    (repo / "mod.py").write_text("def fn(x):\n    return x\n")
+    _git(repo, "add", "mod.py")
+    _git(repo, "commit", "-q", "-m", "base")
+    base_rev = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    messy_body = "\n".join(f"    if x == {i}:\n        return {i}" for i in range(15))
+    (repo / "mod.py").write_text(f"def fn(x):\n{messy_body}\n    return -1\n")
+
+    violations = ratchet.check_worktree(base_rev, repo_root=repo)
+
+    assert len(violations) == 1
+    assert violations[0].qualified_name == "mod.py::fn"
+    assert violations[0].base_complexity == 1
+
+
+def test_check_worktree_includes_untracked_python_files(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    (repo / "README.md").write_text("base\n")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-q", "-m", "base")
+    base_rev = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    messy_body = "\n".join(f"    if x == {i}:\n        return {i}" for i in range(15))
+    (repo / "new_mod.py").write_text(f"def messy(x):\n{messy_body}\n    return -1\n")
+
+    violations = ratchet.check_worktree(base_rev, repo_root=repo)
+
+    assert len(violations) == 1
+    assert violations[0].qualified_name == "new_mod.py::messy"
+    assert violations[0].base_complexity is None

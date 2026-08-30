@@ -29,8 +29,8 @@ Fails when:
     block's head complexity leaves grade A, any increase is still flagged,
     including further growth of an already-worse-than-A block (e.g. 11 -> 15).
 
-Run as a script (``uv run python .github/complexity_ratchet.py``) or import
-``compare_blocks``/``run`` for testing.
+Run as a script (``uv run python complexity_ratchet.py``) or import
+``compare_blocks``/``check_revisions``/``check_worktree`` for testing.
 """
 
 from __future__ import annotations
@@ -85,7 +85,9 @@ def get_merge_base(base_ref: str, head_ref: str, cwd: Path | None = None) -> str
     return run_git(["merge-base", base_ref, head_ref], cwd=cwd).strip()
 
 
-def get_changed_python_files(base_rev: str, head_rev: str, cwd: Path | None = None) -> list[str]:
+def get_changed_python_files(
+    base_rev: str, head_rev: str, cwd: Path | None = None
+) -> list[str]:
     output = run_git(
         ["diff", "--name-only", "--diff-filter=ACMR", base_rev, head_rev],
         cwd=cwd,
@@ -93,7 +95,26 @@ def get_changed_python_files(base_rev: str, head_rev: str, cwd: Path | None = No
     return [line for line in output.splitlines() if line.endswith(".py")]
 
 
-def file_exists_at_revision(revision: str, file_path: str, cwd: Path | None = None) -> bool:
+def get_worktree_changed_python_files(
+    base_rev: str, cwd: Path | None = None
+) -> list[str]:
+    """Return tracked and untracked Python files changed from ``base_rev``."""
+    tracked_output = run_git(
+        ["diff", "--name-only", "--diff-filter=ACMR", base_rev, "--"], cwd=cwd
+    )
+    untracked_output = run_git(["ls-files", "--others", "--exclude-standard"], cwd=cwd)
+    paths = {
+        line
+        for output in (tracked_output, untracked_output)
+        for line in output.splitlines()
+        if line.endswith(".py")
+    }
+    return sorted(paths)
+
+
+def file_exists_at_revision(
+    revision: str, file_path: str, cwd: Path | None = None
+) -> bool:
     try:
         run_git(["cat-file", "-e", f"{revision}:{file_path}"], cwd=cwd)
         return True
@@ -113,6 +134,22 @@ def materialize_files_at_revision(
         target = dest_dir / file_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
+        written.append(target)
+    return written
+
+
+def materialize_worktree_files(
+    file_paths: list[str], dest_dir: Path, repo_root: Path
+) -> list[Path]:
+    """Copy current working-tree files into ``dest_dir`` preserving their paths."""
+    written: list[Path] = []
+    for file_path in file_paths:
+        source = repo_root / file_path
+        if not source.is_file():
+            continue
+        target = dest_dir / file_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
         written.append(target)
     return written
 
@@ -158,7 +195,9 @@ def _qualified_name(module: str, entry: dict) -> str:
     return f"{module}::{name}"
 
 
-def compare_blocks(base_blocks: dict[str, dict], head_blocks: dict[str, dict]) -> list[Violation]:
+def compare_blocks(
+    base_blocks: dict[str, dict], head_blocks: dict[str, dict]
+) -> list[Violation]:
     violations: list[Violation] = []
     for qualified_name, head_entry in head_blocks.items():
         file_path = qualified_name.split("::", 1)[0]
@@ -179,7 +218,10 @@ def compare_blocks(base_blocks: dict[str, dict], head_blocks: dict[str, dict]) -
                 )
             continue
         base_complexity = base_entry["complexity"]
-        if head_complexity > base_complexity and head_complexity > GRADE_A_MAX_COMPLEXITY:
+        if (
+            head_complexity > base_complexity
+            and head_complexity > GRADE_A_MAX_COMPLEXITY
+        ):
             violations.append(
                 Violation(
                     qualified_name=qualified_name,
@@ -193,18 +235,55 @@ def compare_blocks(base_blocks: dict[str, dict], head_blocks: dict[str, dict]) -
     return violations
 
 
-def check_revisions(base_rev: str, head_rev: str, repo_root: Path | None = None) -> list[Violation]:
+def check_revisions(
+    base_rev: str, head_rev: str, repo_root: Path | None = None
+) -> list[Violation]:
     repo_root = repo_root or Path.cwd()
     changed_files = get_changed_python_files(base_rev, head_rev, cwd=repo_root)
     if not changed_files:
         return []
 
-    with tempfile.TemporaryDirectory() as base_tmp, tempfile.TemporaryDirectory() as head_tmp:
+    with (
+        tempfile.TemporaryDirectory() as base_tmp,
+        tempfile.TemporaryDirectory() as head_tmp,
+    ):
         base_dir = Path(base_tmp)
         head_dir = Path(head_tmp)
 
-        base_paths = materialize_files_at_revision(base_rev, changed_files, base_dir, cwd=repo_root)
-        head_paths = materialize_files_at_revision(head_rev, changed_files, head_dir, cwd=repo_root)
+        base_paths = materialize_files_at_revision(
+            base_rev, changed_files, base_dir, cwd=repo_root
+        )
+        head_paths = materialize_files_at_revision(
+            head_rev, changed_files, head_dir, cwd=repo_root
+        )
+
+        base_json = run_radon_json(base_paths, cwd=base_dir)
+        head_json = run_radon_json(head_paths, cwd=head_dir)
+
+        base_blocks = flatten_blocks(base_json, base_dir)
+        head_blocks = flatten_blocks(head_json, head_dir)
+
+    return compare_blocks(base_blocks, head_blocks)
+
+
+def check_worktree(base_rev: str, repo_root: Path | None = None) -> list[Violation]:
+    """Compare ``base_rev`` with the current working tree before committing."""
+    repo_root = repo_root or Path.cwd()
+    changed_files = get_worktree_changed_python_files(base_rev, cwd=repo_root)
+    if not changed_files:
+        return []
+
+    with (
+        tempfile.TemporaryDirectory() as base_tmp,
+        tempfile.TemporaryDirectory() as head_tmp,
+    ):
+        base_dir = Path(base_tmp)
+        head_dir = Path(head_tmp)
+
+        base_paths = materialize_files_at_revision(
+            base_rev, changed_files, base_dir, cwd=repo_root
+        )
+        head_paths = materialize_worktree_files(changed_files, head_dir, repo_root)
 
         base_json = run_radon_json(base_paths, cwd=base_dir)
         head_json = run_radon_json(head_paths, cwd=head_dir)
@@ -222,14 +301,25 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Base revision (default: merge-base of origin/main and --head)",
     )
-    parser.add_argument("--head", default="HEAD", help="Head revision (default: HEAD)")
+    head_group = parser.add_mutually_exclusive_group()
+    head_group.add_argument(
+        "--head", default="HEAD", help="Head revision (default: HEAD)"
+    )
+    head_group.add_argument(
+        "--worktree",
+        action="store_true",
+        help="Compare the base revision with the current working tree, including uncommitted files.",
+    )
     args = parser.parse_args(argv)
 
     base_rev = args.base
     if base_rev is None:
         base_rev = get_merge_base("origin/main", args.head)
 
-    violations = check_revisions(base_rev, args.head)
+    if args.worktree:
+        violations = check_worktree(base_rev)
+    else:
+        violations = check_revisions(base_rev, args.head)
 
     if violations:
         for violation in violations:
