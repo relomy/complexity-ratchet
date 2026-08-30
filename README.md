@@ -42,10 +42,13 @@ Python + `radon` available on `PATH` (or via whatever command you pass as
 - uses: astral-sh/setup-uv@v5
 - run: uv sync
 
-- uses: relomy/complexity-ratchet@v1
+- uses: relomy/complexity-ratchet@main
   with:
     python-command: "uv run python"
 ```
+
+Pin to a commit SHA or tag once one exists, rather than tracking `main`, so a
+change here can't silently affect every caller repo's CI on its next run.
 
 ### Inputs
 
