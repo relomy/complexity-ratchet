@@ -37,6 +37,18 @@ ratcheted.
 
 ## Usage
 
+### Local checks
+
+The comparison engine can check edits that have not been committed yet:
+
+```bash
+uv run --with radon python complexity_ratchet.py --base origin/main --worktree
+```
+
+`--worktree` compares the base revision with the current working tree and
+includes staged, unstaged, and untracked Python files. `--head` remains the
+revision-based mode used by the GitHub Action.
+
 Your workflow needs to check out enough history to resolve a merge-base
 (`fetch-depth: 0`, or at least enough to reach the base branch), and needs
 Python + `radon` available on `PATH` (or via whatever command you pass as
