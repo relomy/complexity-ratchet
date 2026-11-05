@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 MODULE_PATH = Path(__file__).resolve().parents[1] / "complexity_ratchet.py"
 
 
@@ -334,3 +336,198 @@ def test_check_worktree_includes_untracked_python_files(tmp_path):
     assert len(violations) == 1
     assert violations[0].qualified_name == "new_mod.py::messy"
     assert violations[0].base_complexity is None
+
+
+def _git_output(repo, *args):
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout
+
+
+def _rev(repo):
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _grade_c_source(extra_branches=0):
+    body = "\n".join(
+        f"    if x == {i}:\n        return {i}" for i in range(10 + extra_branches)
+    )
+    return f"def busy(x):\n{body}\n    return -1\n"
+
+
+def _compact_complex_source(name):
+    # Short enough that appending it keeps git's rename similarity above 50%.
+    cond = " or ".join(f"x == {i}" for i in range(11))
+    return f"def {name}(x):\n    return {cond}\n"
+
+
+def _repo_with_grade_c_module(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    _init_repo(repo)
+    (repo / "pkg" / "a.py").write_text(_grade_c_source())
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "base")
+    return repo, _rev(repo)
+
+
+def test_check_revisions_pure_rename_passes(tmp_path):
+    repo, base_rev = _repo_with_grade_c_module(tmp_path)
+    (repo / "pkg" / "sub").mkdir()
+    _git(repo, "mv", "pkg/a.py", "pkg/sub/a.py")
+    _git(repo, "commit", "-q", "-m", "move")
+
+    assert ratchet.check_revisions(base_rev, _rev(repo), repo_root=repo) == []
+
+
+def test_check_worktree_pure_rename_passes(tmp_path):
+    repo, base_rev = _repo_with_grade_c_module(tmp_path)
+    (repo / "pkg" / "sub").mkdir()
+    _git(repo, "mv", "pkg/a.py", "pkg/sub/a.py")
+
+    assert ratchet.check_worktree(base_rev, repo_root=repo) == []
+
+
+def test_check_revisions_rename_with_regression_fails(tmp_path):
+    repo, base_rev = _repo_with_grade_c_module(tmp_path)
+    (repo / "pkg" / "sub").mkdir()
+    _git(repo, "mv", "pkg/a.py", "pkg/sub/a.py")
+    (repo / "pkg" / "sub" / "a.py").write_text(_grade_c_source(extra_branches=1))
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "move and grow")
+
+    violations = ratchet.check_revisions(base_rev, _rev(repo), repo_root=repo)
+
+    assert len(violations) == 1
+    assert violations[0].qualified_name == "pkg/sub/a.py::busy"
+    assert violations[0].base_complexity == 11
+    assert violations[0].head_complexity == 12
+
+
+def test_check_worktree_rename_with_regression_fails(tmp_path):
+    repo, base_rev = _repo_with_grade_c_module(tmp_path)
+    (repo / "pkg" / "sub").mkdir()
+    _git(repo, "mv", "pkg/a.py", "pkg/sub/a.py")
+    (repo / "pkg" / "sub" / "a.py").write_text(_grade_c_source(extra_branches=1))
+
+    violations = ratchet.check_worktree(base_rev, repo_root=repo)
+
+    assert len(violations) == 1
+    assert violations[0].base_complexity == 11
+    assert violations[0].head_complexity == 12
+
+
+def _nul(*records):
+    return "".join(f"{r}\0" for r in records)
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        (_nul("A", "new.py", "M", "pkg/mod.py"), {"new.py": "new.py", "pkg/mod.py": "pkg/mod.py"}),
+        (_nul("R100", "old.py", "new.py"), {"new.py": "old.py"}),
+        (_nul("R087", "old.py", "new.txt"), {}),
+        (_nul("R100", "old.txt", "new.py"), {"new.py": "new.py"}),
+        (_nul("C100", "old.py", "copy.py"), {"copy.py": "old.py"}),
+        (_nul("M", "README.md"), {}),
+        (_nul("M", "café.py"), {"café.py": "café.py"}),
+        ("", {}),
+    ],
+)
+def test_parse_name_status(output, expected):
+    assert ratchet._parse_name_status(output) == expected
+
+
+def test_check_revisions_moved_file_with_new_complex_function(tmp_path):
+    repo, base_rev = _repo_with_grade_c_module(tmp_path)
+    (repo / "pkg" / "sub").mkdir()
+    _git(repo, "mv", "pkg/a.py", "pkg/sub/a.py")
+    moved = repo / "pkg" / "sub" / "a.py"
+    moved.write_text(
+        moved.read_text() + "\n\n" + _compact_complex_source("fresh")
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "move and add")
+
+    violations = ratchet.check_revisions(base_rev, _rev(repo), repo_root=repo)
+
+    assert len(violations) == 1
+    assert violations[0].qualified_name == "pkg/sub/a.py::fresh"
+    assert violations[0].base_complexity is None
+
+
+def test_check_worktree_moved_file_with_new_complex_function(tmp_path):
+    repo, base_rev = _repo_with_grade_c_module(tmp_path)
+    (repo / "pkg" / "sub").mkdir()
+    _git(repo, "mv", "pkg/a.py", "pkg/sub/a.py")
+    moved = repo / "pkg" / "sub" / "a.py"
+    moved.write_text(
+        moved.read_text() + "\n\n" + _compact_complex_source("fresh")
+    )
+
+    violations = ratchet.check_worktree(base_rev, repo_root=repo)
+
+    assert len(violations) == 1
+    assert violations[0].qualified_name == "pkg/sub/a.py::fresh"
+    assert violations[0].base_complexity is None
+
+
+def test_check_revisions_rename_below_similarity_threshold_counts_as_new(tmp_path):
+    # Documents a known limitation: git only detects a rename at >= 50%
+    # similarity, so a move plus a heavy rewrite looks like delete + add and
+    # the unchanged `busy` block is reported as new.
+    repo, base_rev = _repo_with_grade_c_module(tmp_path)
+    (repo / "pkg" / "sub").mkdir()
+    _git(repo, "mv", "pkg/a.py", "pkg/sub/a.py")
+    unrelated = "".join(f"CONSTANT_{i} = {i} * 1000 + {i}\n" for i in range(200))
+    (repo / "pkg" / "sub" / "a.py").write_text(_grade_c_source() + "\n" + unrelated)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "move and rewrite")
+
+    status = _git_output(repo, "diff", "-M", "--name-status", base_rev, "HEAD")
+    assert not any(line.startswith("R") for line in status.splitlines())
+
+    violations = ratchet.check_revisions(base_rev, _rev(repo), repo_root=repo)
+
+    assert len(violations) == 1
+    assert violations[0].qualified_name == "pkg/sub/a.py::busy"
+    assert violations[0].base_complexity is None
+
+
+def _non_ascii_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "café.py").write_text("def busy(x):\n    return x\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "base")
+    return repo, _rev(repo)
+
+
+def test_check_revisions_non_ascii_path(tmp_path):
+    repo, base_rev = _non_ascii_repo(tmp_path)
+    (repo / "café.py").write_text(_grade_c_source())
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "grow")
+
+    violations = ratchet.check_revisions(base_rev, _rev(repo), repo_root=repo)
+
+    assert len(violations) == 1
+    assert violations[0].qualified_name == "café.py::busy"
+    assert violations[0].base_complexity == 1
+
+
+def test_check_worktree_non_ascii_paths(tmp_path):
+    repo, base_rev = _non_ascii_repo(tmp_path)
+    (repo / "café.py").write_text(_grade_c_source())
+    (repo / "nové.py").write_text(_grade_c_source().replace("busy", "fresh"))
+
+    violations = ratchet.check_worktree(base_rev, repo_root=repo)
+
+    assert {v.qualified_name for v in violations} == {"café.py::busy", "nové.py::fresh"}

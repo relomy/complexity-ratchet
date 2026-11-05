@@ -3,9 +3,12 @@
 Compares Radon cyclomatic-complexity blocks between the merge-base of
 ``origin/main``/``HEAD`` (or explicit revisions) and the head revision, for
 Python files changed between those two points. A block is identified by its
-qualified name (module path + class + function/method name) so that renamed
-files or reordered code don't produce false positives as long as the block's
-name is stable.
+qualified name (module path + class + function/method name) so that reordered
+code doesn't produce false positives as long as the block's name is stable.
+Renamed or moved files (detected by ``git diff -M``) are compared against
+their pre-move content, with the base side keyed under the new path. A file
+that is renamed and edited past git's similarity threshold is seen as a delete
+plus an add, so its blocks count as new.
 
 Only function/method blocks are compared. Radon's class-level "complexity" is
 an average of its methods' complexities (roughly ``avg(method_complexities) +
@@ -85,31 +88,51 @@ def get_merge_base(base_ref: str, head_ref: str, cwd: Path | None = None) -> str
     return run_git(["merge-base", base_ref, head_ref], cwd=cwd).strip()
 
 
+def _parse_name_status(output: str) -> dict[str, str]:
+    """Map each changed ``.py`` path to its path at the base revision.
+
+    ``output`` is NUL-separated ``git diff --name-status -z`` output: a status
+    token followed by one path, or two paths (old, new) for renames and copies.
+    """
+    tokens = output.split("\0")
+    paths: dict[str, str] = {}
+    i = 0
+    while i < len(tokens) and tokens[i]:
+        status = tokens[i]
+        count = 2 if status[0] in "RC" else 1
+        names = tokens[i + 1 : i + 1 + count]
+        i += 1 + count
+        if names and names[-1].endswith(".py"):
+            renamed = len(names) == 2 and names[0].endswith(".py")
+            paths[names[-1]] = names[0] if renamed else names[-1]
+    return paths
+
+
 def get_changed_python_files(
     base_rev: str, head_rev: str, cwd: Path | None = None
-) -> list[str]:
+) -> dict[str, str]:
+    """Return {head path: base path} for changed Python files (differ only on renames)."""
     output = run_git(
-        ["diff", "--name-only", "--diff-filter=ACMR", base_rev, head_rev],
+        ["diff", "--name-status", "-z", "-M", "--diff-filter=ACMR", base_rev, head_rev],
         cwd=cwd,
     )
-    return [line for line in output.splitlines() if line.endswith(".py")]
+    return _parse_name_status(output)
 
 
 def get_worktree_changed_python_files(
     base_rev: str, cwd: Path | None = None
-) -> list[str]:
-    """Return tracked and untracked Python files changed from ``base_rev``."""
+) -> dict[str, str]:
+    """Return {worktree path: base path} for tracked and untracked Python files changed from ``base_rev``."""
     tracked_output = run_git(
-        ["diff", "--name-only", "--diff-filter=ACMR", base_rev, "--"], cwd=cwd
+        ["diff", "--name-status", "-z", "-M", "--diff-filter=ACMR", base_rev, "--"],
+        cwd=cwd,
     )
-    untracked_output = run_git(["ls-files", "--others", "--exclude-standard"], cwd=cwd)
-    paths = {
-        line
-        for output in (tracked_output, untracked_output)
-        for line in output.splitlines()
-        if line.endswith(".py")
-    }
-    return sorted(paths)
+    untracked_output = run_git(["ls-files", "-z", "--others", "--exclude-standard"], cwd=cwd)
+    paths = _parse_name_status(tracked_output)
+    for line in untracked_output.split("\0"):
+        if line.endswith(".py"):
+            paths.setdefault(line, line)
+    return dict(sorted(paths.items()))
 
 
 def file_exists_at_revision(
@@ -123,14 +146,24 @@ def file_exists_at_revision(
 
 
 def materialize_files_at_revision(
-    revision: str, file_paths: list[str], dest_dir: Path, cwd: Path | None = None
+    revision: str,
+    file_paths: list[str],
+    dest_dir: Path,
+    cwd: Path | None = None,
+    source_paths: dict[str, str] | None = None,
 ) -> list[Path]:
-    """Write each file's content at ``revision`` into ``dest_dir``, preserving relative paths."""
+    """Write each file's content at ``revision`` into ``dest_dir``, preserving relative paths.
+
+    ``source_paths`` maps a path in ``file_paths`` to the path to read at
+    ``revision`` when it differs (a renamed file). The content is still written
+    under the ``file_paths`` name so block keys line up with the head side.
+    """
     written: list[Path] = []
     for file_path in file_paths:
-        if not file_exists_at_revision(revision, file_path, cwd=cwd):
+        source = (source_paths or {}).get(file_path, file_path)
+        if not file_exists_at_revision(revision, source, cwd=cwd):
             continue
-        content = run_git(["show", f"{revision}:{file_path}"], cwd=cwd)
+        content = run_git(["show", f"{revision}:{source}"], cwd=cwd)
         target = dest_dir / file_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
@@ -251,10 +284,14 @@ def check_revisions(
         head_dir = Path(head_tmp)
 
         base_paths = materialize_files_at_revision(
-            base_rev, changed_files, base_dir, cwd=repo_root
+            base_rev,
+            list(changed_files),
+            base_dir,
+            cwd=repo_root,
+            source_paths=changed_files,
         )
         head_paths = materialize_files_at_revision(
-            head_rev, changed_files, head_dir, cwd=repo_root
+            head_rev, list(changed_files), head_dir, cwd=repo_root
         )
 
         base_json = run_radon_json(base_paths, cwd=base_dir)
@@ -281,9 +318,13 @@ def check_worktree(base_rev: str, repo_root: Path | None = None) -> list[Violati
         head_dir = Path(head_tmp)
 
         base_paths = materialize_files_at_revision(
-            base_rev, changed_files, base_dir, cwd=repo_root
+            base_rev,
+            list(changed_files),
+            base_dir,
+            cwd=repo_root,
+            source_paths=changed_files,
         )
-        head_paths = materialize_worktree_files(changed_files, head_dir, repo_root)
+        head_paths = materialize_worktree_files(list(changed_files), head_dir, repo_root)
 
         base_json = run_radon_json(base_paths, cwd=base_dir)
         head_json = run_radon_json(head_paths, cwd=head_dir)
