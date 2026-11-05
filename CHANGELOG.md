@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/relomy/complexity-ratchet/compare/v0.1.0...v0.1.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* compare renamed files against their pre-move content ([#6](https://github.com/relomy/complexity-ratchet/issues/6)) ([4c16700](https://github.com/relomy/complexity-ratchet/commit/4c16700b5ec75dd62c1884db9f3fb753593934c5)), closes [#5](https://github.com/relomy/complexity-ratchet/issues/5)
+
 ## 0.1.0 (2026-08-30)
 
 
